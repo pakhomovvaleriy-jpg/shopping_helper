@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "279631491337",
+    "project_id": "shoppinghelper-2e7c6",
+    "storage_bucket": "shoppinghelper-2e7c6.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:279631491337:android:6a71942e9c3aba1d2ca3d8",
+        "android_client_info": {
+          "package_name": "com.shopping.helper"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyBjpGiA1BVWIZP9YnBDnPAESzrmEOaAfJE"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

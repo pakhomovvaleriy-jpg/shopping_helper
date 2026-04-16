@@ -1,19 +1,20 @@
 // Экран 3: Добавить товар
-// Ручной ввод + автодополнение + AI подсказки
-// Голосовой ввод (заглушка — подключается через Yandex SpeechKit)
+// Ручной ввод + автодополнение + AI подбор (DeepSeek)
 
-import React, { useState } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import {
   View, Text, TextInput, TouchableOpacity,
-  StyleSheet, ScrollView, FlatList, Alert, Platform, StatusBar,
+  StyleSheet, ScrollView, Alert, Platform, KeyboardAvoidingView,
 } from 'react-native';
-import { COLORS } from '../config/colors';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { useTheme } from '../context/ThemeContext';
 import { CATEGORIES, UNITS, DEFAULT_CATEGORY } from '../config/constants';
-import { globalStyles, theme } from '../styles/theme';
-import { addItemToList, addItemsToList } from '../utils/storage';
+import { theme } from '../styles/theme';
+import { addItemToList, addItemsToList, getListById, saveItemPrice, getItemPrice, getSettings } from '../utils/storage';
 import { searchProducts } from '../data/products';
 import { parseMultipleItems } from '../utils/parser';
 import { askAIForProducts, isAIConfigured } from '../utils/ai';
+import { logAddItem, logAIRequest } from '../utils/analytics';
 
 // Популярные запросы для AI подсказок (примеры)
 const AI_QUICK_PROMPTS = [
@@ -23,6 +24,9 @@ const AI_QUICK_PROMPTS = [
 ];
 
 export default function AddItemScreen({ navigate, params }) {
+  const { colors: C, gs } = useTheme();
+  const insets = useSafeAreaInsets();
+  const styles = useMemo(() => createStyles(C, insets), [C, insets]);
   const { listId } = params;
 
   // Поле ввода
@@ -45,6 +49,14 @@ export default function AddItemScreen({ navigate, params }) {
   const [showAIPanel, setShowAIPanel] = useState(false);
 
   const [adding, setAdding] = useState(false);
+  const [listName, setListName] = useState('');
+  const [listIcon, setListIcon] = useState('');
+
+  useEffect(() => {
+    getListById(listId)
+      .then(list => { if (list) { setListName(list.name); setListIcon(list.icon); } })
+      .catch(() => {});
+  }, [listId]);
 
   // Обработка ввода текста → автодополнение
   const handleTextChange = (text) => {
@@ -57,7 +69,7 @@ export default function AddItemScreen({ navigate, params }) {
   };
 
   // Выбрать подсказку из автодополнения
-  const handleSelectSuggestion = (product) => {
+  const handleSelectSuggestion = async (product) => {
     setItemName(product.name);
     setItemUnit(product.unit);
     setItemCategory(product.category);
@@ -65,10 +77,15 @@ export default function AddItemScreen({ navigate, params }) {
     setItemQty('1');
     setInputText(product.name);
     setSuggestions([]);
+    const saved = await getItemPrice(product.name);
+    if (saved) {
+      setItemPrice(saved.price.toString());
+      setItemUnit(saved.unit);
+    }
   };
 
   // Подтвердить ввод текста (если нет выбора из списка)
-  const handleConfirmText = () => {
+  const handleConfirmText = async () => {
     if (!inputText.trim()) return;
     const parsed = parseMultipleItems(inputText);
     if (parsed.length > 0) {
@@ -78,27 +95,55 @@ export default function AddItemScreen({ navigate, params }) {
       setItemCategory(first.category);
       setItemEmoji(first.emoji);
       setItemQty(first.quantity.toString());
+      const saved = await getItemPrice(first.name);
+      if (saved) {
+        setItemPrice(saved.price.toString());
+        setItemUnit(saved.unit);
+      }
     }
     setSuggestions([]);
   };
 
   // Добавить товар в список
-  const handleAdd = async () => {
+  const handleAdd = async (force = false) => {
     const name = itemName.trim() || inputText.trim();
     if (!name) {
       Alert.alert('Введите название товара');
       return;
     }
+
+    // Проверка дубликата
+    if (!force) {
+      const currentList = await getListById(listId);
+      const duplicate = currentList?.items.find(
+        i => i.name.toLowerCase() === name.toLowerCase() && !i.checked
+      );
+      if (duplicate) {
+        Alert.alert(
+          'Товар уже в списке',
+          `"${name}" уже есть среди некупленных. Добавить ещё?`,
+          [
+            { text: 'Отмена', style: 'cancel' },
+            { text: 'Добавить ещё', onPress: () => handleAdd(true) },
+          ]
+        );
+        return;
+      }
+    }
+
+    const price = parseFloat(itemPrice) || 0;
     setAdding(true);
     await addItemToList(listId, {
       name,
       quantity: parseFloat(itemQty) || 1,
       unit: itemUnit,
-      price: parseFloat(itemPrice) || 0,
+      price,
       category: itemCategory,
       emoji: itemEmoji,
     });
-    // Сброс формы
+    if (price > 0) await saveItemPrice(name, price, itemUnit);
+    logAddItem();
+    const s = await getSettings();
     setInputText('');
     setItemName('');
     setItemQty('1');
@@ -108,18 +153,21 @@ export default function AddItemScreen({ navigate, params }) {
     setItemEmoji('📦');
     setSuggestions([]);
     setAdding(false);
-    Alert.alert('', `✅ "${name}" добавлен в список`, [{ text: 'OK' }]);
+    if (!s.stayOnAddScreen) navigate('shopping', { listId });
   };
 
   // AI: спросить что купить
   const handleAskAI = async (query) => {
     const q = query || aiQuery;
-    if (!q.trim()) return;
+    if (!q.trim()) {
+      Alert.alert('Введите запрос', 'Например: "для борща" или "завтраки на неделю"');
+      return;
+    }
 
     if (!isAIConfigured()) {
       Alert.alert(
         'AI не настроен',
-        'Добавьте ключи GigaChat в файл src/config/api.js',
+        'Добавьте API ключ DeepSeek в файл src/config/api.js',
         [{ text: 'OK' }],
       );
       return;
@@ -127,11 +175,16 @@ export default function AddItemScreen({ navigate, params }) {
 
     setAiLoading(true);
     setAiResults([]);
+    logAIRequest(q);
     const results = await askAIForProducts(q);
     setAiLoading(false);
 
+    if (results === 'timeout') {
+      Alert.alert('Сервер не отвечает', 'Превышено время ожидания. Проверьте интернет и попробуйте ещё раз.');
+      return;
+    }
     if (!results || results.length === 0) {
-      Alert.alert('AI не ответил', 'Попробуйте ещё раз или проверьте интернет');
+      Alert.alert('Нет результатов', 'Попробуйте изменить запрос или проверьте интернет.');
       return;
     }
     setAiResults(results);
@@ -155,20 +208,35 @@ export default function AddItemScreen({ navigate, params }) {
     navigate('shopping', { listId });
   };
 
+  // Сбросить результаты AI
+  const handleClearAI = () => {
+    setAiResults([]);
+    setAiSelected({});
+    setAiQuery('');
+  };
+
   return (
-    <View style={styles.container}>
+    <KeyboardAvoidingView
+      style={styles.container}
+      behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+    >
       {/* Шапка */}
       <View style={styles.header}>
         <TouchableOpacity onPress={() => navigate('shopping', { listId })} style={styles.backBtn}>
           <Text style={styles.backBtnText}>‹ Назад</Text>
         </TouchableOpacity>
-        <Text style={styles.headerTitle}>Добавить товар</Text>
+        <View style={styles.headerCenter}>
+          <Text style={styles.headerTitle}>Добавить товар</Text>
+          {listName ? (
+            <Text style={styles.headerSubtitle}>🛒 {listName}</Text>
+          ) : null}
+        </View>
       </View>
 
       <ScrollView style={{ flex: 1 }} contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
 
         {/* ─── Ввод товара ─── */}
-        <View style={globalStyles.card}>
+        <View style={gs.card}>
           <Text style={styles.sectionTitle}>⌨️ Введите товар</Text>
 
           <TextInput
@@ -192,7 +260,7 @@ export default function AddItemScreen({ navigate, params }) {
                 >
                   <Text style={styles.suggestionEmoji}>{product.emoji}</Text>
                   <Text style={styles.suggestionName}>{product.name}</Text>
-                  <Text style={globalStyles.textSecondary}>{product.unit}</Text>
+                  <Text style={gs.textSecondary}>{product.unit}</Text>
                 </TouchableOpacity>
               ))}
             </View>
@@ -228,7 +296,9 @@ export default function AddItemScreen({ navigate, params }) {
                 </ScrollView>
               </View>
 
-              <Text style={styles.detailLabel}>Цена за единицу (₽)</Text>
+              <Text style={styles.detailLabel}>
+                {(itemUnit === 'г' || itemUnit === 'мл') ? 'Стоимость товара (₽)' : `Цена за 1 ${itemUnit} (₽)`}
+              </Text>
               <TextInput
                 style={[styles.qtyInput, { width: '100%', marginBottom: 10, textAlign: 'left', paddingHorizontal: 12 }]}
                 value={itemPrice}
@@ -258,29 +328,29 @@ export default function AddItemScreen({ navigate, params }) {
           )}
 
           <TouchableOpacity
-            style={[globalStyles.btnPrimary, { marginTop: 12 }, adding && { opacity: 0.6 }]}
+            style={[gs.btnPrimary, { marginTop: 12 }, adding && { opacity: 0.6 }]}
             onPress={handleAdd}
             disabled={adding}
           >
-            <Text style={globalStyles.btnPrimaryText}>
+            <Text style={gs.btnPrimaryText}>
               {adding ? 'Добавляю...' : '+ Добавить в список'}
             </Text>
           </TouchableOpacity>
         </View>
 
         {/* ─── AI подсказки ─── */}
-        <View style={[globalStyles.card, styles.aiCard]}>
+        <View style={[gs.card, styles.aiCard]}>
           <TouchableOpacity
             style={styles.aiHeader}
             onPress={() => setShowAIPanel(!showAIPanel)}
           >
-            <Text style={styles.sectionTitle}>💡 Подсказка AI</Text>
+            <Text style={styles.sectionTitle}>🌟 Умный подбор</Text>
             <Text style={styles.aiToggle}>{showAIPanel ? '▲' : '▼'}</Text>
           </TouchableOpacity>
 
           {showAIPanel && (
             <>
-              <Text style={globalStyles.textSecondary}>
+              <Text style={gs.textSecondary}>
                 Спросите что купить для блюда или случая
               </Text>
 
@@ -321,7 +391,24 @@ export default function AddItemScreen({ navigate, params }) {
               {/* Результаты AI */}
               {aiResults.length > 0 && (
                 <View style={styles.aiResults}>
-                  <Text style={styles.aiResultsTitle}>AI предлагает:</Text>
+                  <View style={styles.aiResultsHeader}>
+                    <Text style={styles.aiResultsTitle}>AI предлагает:</Text>
+                    <View style={styles.aiSelectBtns}>
+                      <TouchableOpacity
+                        onPress={() => {
+                          const all = {};
+                          aiResults.forEach((_, i) => { all[i] = true; });
+                          setAiSelected(all);
+                        }}
+                      >
+                        <Text style={styles.aiSelectBtnText}>Все</Text>
+                      </TouchableOpacity>
+                      <Text style={styles.aiSelectDivider}>|</Text>
+                      <TouchableOpacity onPress={() => setAiSelected({})}>
+                        <Text style={styles.aiSelectBtnText}>Снять</Text>
+                      </TouchableOpacity>
+                    </View>
+                  </View>
                   {aiResults.map((item, i) => (
                     <TouchableOpacity
                       key={i}
@@ -335,51 +422,66 @@ export default function AddItemScreen({ navigate, params }) {
                       <Text style={styles.aiResultName}>{item.name}</Text>
                     </TouchableOpacity>
                   ))}
-                  <TouchableOpacity
-                    style={[globalStyles.btnPrimary, { marginTop: 12 }]}
-                    onPress={handleAddAllAI}
-                  >
-                    <Text style={globalStyles.btnPrimaryText}>
-                      Добавить выбранное ({Object.values(aiSelected).filter(Boolean).length})
-                    </Text>
-                  </TouchableOpacity>
+                  <View style={styles.aiActionsRow}>
+                    <TouchableOpacity
+                      style={styles.aiClearBtn}
+                      onPress={handleClearAI}
+                    >
+                      <Text style={styles.aiClearBtnText}>Сбросить</Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity
+                      style={[gs.btnPrimary, { flex: 1 }]}
+                      onPress={handleAddAllAI}
+                    >
+                      <Text style={gs.btnPrimaryText}>
+                        Добавить выбранное ({Object.values(aiSelected).filter(Boolean).length})
+                      </Text>
+                    </TouchableOpacity>
+                  </View>
                 </View>
               )}
             </>
           )}
         </View>
       </ScrollView>
-    </View>
+    </KeyboardAvoidingView>
   );
 }
 
-const styles = StyleSheet.create({
+const createStyles = (C, insets) => StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: COLORS.background,
+    backgroundColor: C.background,
   },
   header: {
-    flexDirection: 'row',
-    alignItems: 'center',
     paddingHorizontal: theme.spacing.md,
-    paddingVertical: theme.spacing.sm,
-    paddingTop: Platform.OS === 'android' ? (StatusBar.currentHeight || 24) + 8 : theme.spacing.sm,
-    backgroundColor: COLORS.surface,
+    paddingTop: insets.top + 8,
+    paddingBottom: theme.spacing.sm,
+    backgroundColor: C.surface,
     borderBottomWidth: 1,
-    borderBottomColor: COLORS.border,
+    borderBottomColor: C.border,
   },
   backBtn: {
-    marginRight: theme.spacing.sm,
+    alignSelf: 'flex-start',
+    marginBottom: 4,
   },
   backBtnText: {
     fontSize: theme.font.title,
-    color: COLORS.primary,
+    color: C.primary,
     fontWeight: '600',
+  },
+  headerCenter: {
+    marginTop: 2,
   },
   headerTitle: {
     fontSize: theme.font.subtitle,
     fontWeight: '700',
-    color: COLORS.textPrimary,
+    color: C.textPrimary,
+  },
+  headerSubtitle: {
+    fontSize: theme.font.small,
+    color: C.textSecondary,
+    marginTop: 4,
   },
   content: {
     padding: theme.spacing.md,
@@ -388,22 +490,22 @@ const styles = StyleSheet.create({
   sectionTitle: {
     fontSize: theme.font.subtitle,
     fontWeight: '700',
-    color: COLORS.textPrimary,
+    color: C.textPrimary,
     marginBottom: 10,
   },
   mainInput: {
     borderWidth: 1.5,
-    borderColor: COLORS.border,
+    borderColor: C.border,
     borderRadius: theme.radius.md,
     padding: 12,
     fontSize: theme.font.body,
-    color: COLORS.textPrimary,
-    backgroundColor: COLORS.background,
+    color: C.textPrimary,
+    backgroundColor: C.background,
     marginBottom: 8,
   },
   suggestionsBox: {
     borderWidth: 1,
-    borderColor: COLORS.border,
+    borderColor: C.border,
     borderRadius: theme.radius.md,
     overflow: 'hidden',
     marginBottom: 8,
@@ -413,8 +515,8 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     padding: 10,
     borderBottomWidth: 1,
-    borderBottomColor: COLORS.border,
-    backgroundColor: COLORS.surface,
+    borderBottomColor: C.border,
+    backgroundColor: C.surface,
   },
   suggestionEmoji: {
     fontSize: 18,
@@ -423,13 +525,13 @@ const styles = StyleSheet.create({
   suggestionName: {
     flex: 1,
     fontSize: theme.font.body,
-    color: COLORS.textPrimary,
+    color: C.textPrimary,
     fontWeight: '500',
   },
   itemDetails: {
     marginTop: 8,
     padding: 12,
-    backgroundColor: COLORS.background,
+    backgroundColor: C.background,
     borderRadius: theme.radius.md,
   },
   detailRow: {
@@ -441,22 +543,22 @@ const styles = StyleSheet.create({
   detailLabel: {
     fontSize: theme.font.small,
     fontWeight: '600',
-    color: COLORS.textSecondary,
+    color: C.textSecondary,
     marginBottom: 6,
     textTransform: 'uppercase',
     letterSpacing: 0.5,
   },
   qtyInput: {
     borderWidth: 1.5,
-    borderColor: COLORS.border,
+    borderColor: C.border,
     borderRadius: theme.radius.sm,
     padding: 8,
     width: 70,
     textAlign: 'center',
     fontSize: theme.font.subtitle,
     fontWeight: '700',
-    color: COLORS.textPrimary,
-    backgroundColor: COLORS.surface,
+    color: C.textPrimary,
+    backgroundColor: C.surface,
   },
   qtyUnitRow: {
     flexDirection: 'row',
@@ -472,24 +574,24 @@ const styles = StyleSheet.create({
     paddingHorizontal: 12,
     paddingVertical: 6,
     borderRadius: theme.radius.round,
-    backgroundColor: COLORS.background,
+    backgroundColor: C.background,
     borderWidth: 1.5,
-    borderColor: COLORS.border,
+    borderColor: C.border,
   },
   unitBtnSelected: {
-    backgroundColor: COLORS.primary,
-    borderColor: COLORS.primary,
+    backgroundColor: C.primary,
+    borderColor: C.primary,
   },
   unitBtnText: {
     fontSize: theme.font.small,
     fontWeight: '600',
-    color: COLORS.textSecondary,
+    color: C.textSecondary,
   },
   // AI панель
   aiCard: {
     borderWidth: 1.5,
-    borderColor: COLORS.aiBorder,
-    backgroundColor: COLORS.aiBackground,
+    borderColor: C.aiBorder,
+    backgroundColor: C.aiBackground,
   },
   aiHeader: {
     flexDirection: 'row',
@@ -498,7 +600,7 @@ const styles = StyleSheet.create({
   },
   aiToggle: {
     fontSize: 16,
-    color: COLORS.aiText,
+    color: C.aiText,
   },
   quickPromptsRow: {
     flexDirection: 'row',
@@ -507,14 +609,14 @@ const styles = StyleSheet.create({
   quickPromptBtn: {
     paddingHorizontal: 12,
     paddingVertical: 6,
-    backgroundColor: COLORS.surface,
+    backgroundColor: C.surface,
     borderRadius: theme.radius.round,
     borderWidth: 1,
-    borderColor: COLORS.aiBorder,
+    borderColor: C.aiBorder,
   },
   quickPromptText: {
     fontSize: theme.font.small,
-    color: COLORS.aiText,
+    color: C.aiText,
     fontWeight: '600',
   },
   aiInputRow: {
@@ -523,7 +625,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   aiAskBtn: {
-    backgroundColor: COLORS.aiText,
+    backgroundColor: C.aiText,
     paddingHorizontal: 16,
     paddingVertical: 12,
     borderRadius: theme.radius.md,
@@ -536,14 +638,33 @@ const styles = StyleSheet.create({
   aiResults: {
     marginTop: 12,
     padding: 12,
-    backgroundColor: COLORS.surface,
+    backgroundColor: C.surface,
     borderRadius: theme.radius.md,
+  },
+  aiResultsHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 8,
   },
   aiResultsTitle: {
     fontSize: theme.font.body,
     fontWeight: '700',
-    color: COLORS.aiText,
-    marginBottom: 8,
+    color: C.aiText,
+  },
+  aiSelectBtns: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  aiSelectBtnText: {
+    fontSize: theme.font.small,
+    fontWeight: '600',
+    color: C.aiText,
+  },
+  aiSelectDivider: {
+    color: C.border,
+    fontSize: theme.font.small,
   },
   aiResultItem: {
     flexDirection: 'row',
@@ -551,25 +672,25 @@ const styles = StyleSheet.create({
     paddingVertical: 8,
     paddingHorizontal: 4,
     borderBottomWidth: 1,
-    borderBottomColor: COLORS.border,
+    borderBottomColor: C.border,
     borderRadius: 6,
   },
   aiResultItemSelected: {
-    backgroundColor: COLORS.aiBackground,
+    backgroundColor: C.aiBackground,
   },
   aiCheckbox: {
     width: 22,
     height: 22,
     borderRadius: 11,
     borderWidth: 2,
-    borderColor: COLORS.textHint,
+    borderColor: C.textHint,
     marginRight: 8,
     alignItems: 'center',
     justifyContent: 'center',
   },
   aiCheckboxChecked: {
-    backgroundColor: COLORS.success,
-    borderColor: COLORS.success,
+    backgroundColor: C.success,
+    borderColor: C.success,
   },
   aiCheckmark: {
     color: '#fff',
@@ -582,6 +703,25 @@ const styles = StyleSheet.create({
   },
   aiResultName: {
     fontSize: theme.font.body,
-    color: COLORS.textPrimary,
+    color: C.textPrimary,
+  },
+  aiActionsRow: {
+    flexDirection: 'row',
+    gap: 8,
+    marginTop: 12,
+    alignItems: 'center',
+  },
+  aiClearBtn: {
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    borderRadius: theme.radius.md,
+    borderWidth: 1.5,
+    borderColor: C.border,
+    backgroundColor: C.surface,
+  },
+  aiClearBtnText: {
+    fontSize: theme.font.small,
+    fontWeight: '600',
+    color: C.textSecondary,
   },
 });

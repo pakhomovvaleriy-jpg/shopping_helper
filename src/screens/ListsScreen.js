@@ -2,19 +2,26 @@
 // Показывает все созданные списки покупок
 // Позволяет создать новый список (вручную или из шаблона)
 
-import React, { useState, useCallback } from 'react';
+import React, { useState, useCallback, useMemo } from 'react';
 import {
   View, Text, TouchableOpacity,
   StyleSheet, Modal, TextInput, ScrollView,
-  Alert, RefreshControl, Platform, StatusBar,
+  Alert, RefreshControl,
 } from 'react-native';
-import { COLORS } from '../config/colors';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import DateTimePicker from '@react-native-community/datetimepicker';
+import { useTheme } from '../context/ThemeContext';
 import { LIST_ICONS, LIST_COLORS } from '../config/constants';
-import { globalStyles, theme } from '../styles/theme';
-import { getLists, createList, deleteList, addItemsToList, restoreList } from '../utils/storage';
+import { theme } from '../styles/theme';
+import { getLists, createList, deleteList, addItemsToList, restoreList, updateList } from '../utils/storage';
+import { logCreateList } from '../utils/analytics';
+import { scheduleListReminder, cancelListReminder } from '../utils/notifications';
 import { TEMPLATES } from '../data/templates';
 
 export default function ListsScreen({ navigate }) {
+  const { colors: C, gs } = useTheme();
+  const insets = useSafeAreaInsets();
+  const styles = useMemo(() => createStyles(C, insets), [C, insets]);
   const [lists, setLists] = useState([]);
   const [refreshing, setRefreshing] = useState(false);
   const [showHistory, setShowHistory] = useState(false);
@@ -27,6 +34,13 @@ export default function ListsScreen({ navigate }) {
 
   // Модалка выбора шаблона
   const [showTemplates, setShowTemplates] = useState(false);
+
+  // Напоминания
+  const [reminderList, setReminderList] = useState(null);
+  const [reminderDate, setReminderDate] = useState(new Date());
+  const [showReminderModal, setShowReminderModal] = useState(false);
+  const [showDatePicker, setShowDatePicker] = useState(false);
+  const [showTimePicker, setShowTimePicker] = useState(false);
 
   const loadLists = useCallback(async () => {
     const data = await getLists();
@@ -52,15 +66,17 @@ export default function ListsScreen({ navigate }) {
     }
     try {
       await createList({ name, icon: selectedIcon.emoji, color: selectedColor });
+      logCreateList();
       setNewName('');
+      await loadLists();
       setShowCreate(false);
-      loadLists();
     } catch (e) {
       Alert.alert('Ошибка', 'Не удалось создать список. Попробуйте ещё раз.');
     }
   };
 
   const handleDeleteList = (listId, listName) => {
+    const list = lists.find(l => l.id === listId);
     Alert.alert(
       'Удалить список?',
       `Список "${listName}" будет удалён безвозвратно`,
@@ -69,6 +85,9 @@ export default function ListsScreen({ navigate }) {
         {
           text: 'Удалить', style: 'destructive',
           onPress: async () => {
+            if (list?.reminder?.notificationId) {
+              await cancelListReminder(list.reminder.notificationId);
+            }
             await deleteList(listId);
             loadLists();
           },
@@ -77,6 +96,55 @@ export default function ListsScreen({ navigate }) {
     );
   };
 
+  // Открыть модалку напоминания для списка
+  const handleOpenReminder = (list) => {
+    const initial = list.reminder?.date
+      ? new Date(list.reminder.date)
+      : (() => { const n = new Date(); n.setHours(n.getHours() + 1, 0, 0, 0); return n; })();
+    setReminderDate(initial);
+    setReminderList(list);
+    setShowReminderModal(true);
+  };
+
+  // Сохранить напоминание
+  const handleSaveReminder = async () => {
+    if (reminderDate <= new Date()) {
+      Alert.alert('Неверное время', 'Выберите время в будущем');
+      return;
+    }
+    if (reminderList.reminder?.notificationId) {
+      await cancelListReminder(reminderList.reminder.notificationId);
+    }
+    const notificationId = await scheduleListReminder(reminderList.id, reminderList.name, reminderDate);
+    if (!notificationId) {
+      Alert.alert('Нет разрешения', 'Разрешите уведомления в настройках телефона');
+      return;
+    }
+    await updateList({ ...reminderList, reminder: { date: reminderDate.toISOString(), notificationId } });
+    setShowReminderModal(false);
+    loadLists();
+    Alert.alert('Напоминание установлено', formatReminderFull(reminderDate));
+  };
+
+  // Удалить напоминание
+  const handleRemoveReminder = async () => {
+    if (reminderList.reminder?.notificationId) {
+      await cancelListReminder(reminderList.reminder.notificationId);
+    }
+    await updateList({ ...reminderList, reminder: null });
+    setShowReminderModal(false);
+    loadLists();
+  };
+
+  // Форматирование даты/времени напоминания
+  const MONTHS = ['янв','фев','мар','апр','май','июн','июл','авг','сен','окт','ноя','дек'];
+  const formatReminderDate = (d) =>
+    `${d.getDate()} ${MONTHS[d.getMonth()]} ${d.getFullYear()}`;
+  const formatReminderTime = (d) =>
+    `${d.getHours().toString().padStart(2,'0')}:${d.getMinutes().toString().padStart(2,'0')}`;
+  const formatReminderFull = (d) =>
+    `${formatReminderDate(d)} в ${formatReminderTime(d)}`;
+
   const handleUseTemplate = async (template) => {
     const list = await createList({
       name: template.label,
@@ -84,8 +152,8 @@ export default function ListsScreen({ navigate }) {
       color: LIST_COLORS[Math.floor(Math.random() * LIST_COLORS.length)],
     });
     await addItemsToList(list.id, template.items);
+    await loadLists();
     setShowTemplates(false);
-    loadLists();
   };
 
   const handleRestoreList = (listId, listName) => {
@@ -112,7 +180,7 @@ export default function ListsScreen({ navigate }) {
     const progress = total > 0 ? checked / total : 0;
 
     return (
-      <View style={[globalStyles.card, styles.listCard]}>
+      <View style={[gs.card, styles.listCard]}>
         {/* Цветная полоска слева */}
         <View style={[styles.colorBar, { backgroundColor: item.color }]} />
 
@@ -125,7 +193,7 @@ export default function ListsScreen({ navigate }) {
             <Text style={styles.listIcon}>{item.icon}</Text>
             <View style={{ flex: 1 }}>
               <Text style={styles.listName}>{item.name}</Text>
-              <Text style={globalStyles.textSecondary}>
+              <Text style={gs.textSecondary}>
                 {total === 0
                   ? 'Список пуст'
                   : `${checked} из ${total} куплено`}
@@ -143,6 +211,14 @@ export default function ListsScreen({ navigate }) {
               }]} />
             </View>
           )}
+        </TouchableOpacity>
+
+        {/* Кнопка напоминание */}
+        <TouchableOpacity
+          style={styles.deleteBtn}
+          onPress={() => handleOpenReminder(item)}
+        >
+          <Text style={styles.deleteBtnText}>{item.reminder ? '🔔' : '🔕'}</Text>
         </TouchableOpacity>
 
         {/* Кнопка удалить */}
@@ -164,17 +240,17 @@ export default function ListsScreen({ navigate }) {
     const { total } = getListStats(item);
     const totalSum = item.items
       .filter(i => i.price > 0)
-      .reduce((s, i) => s + i.quantity * i.price, 0);
+      .reduce((s, i) => s + ((i.unit === 'г' || i.unit === 'мл') ? i.price : i.quantity * i.price), 0);
 
     return (
-      <View style={[globalStyles.card, styles.listCard, styles.historyCard]}>
+      <View style={[gs.card, styles.listCard, styles.historyCard]}>
         <View style={[styles.colorBar, { backgroundColor: item.color, opacity: 0.4 }]} />
         <View style={styles.listCardContent}>
           <View style={styles.listCardHeader}>
             <Text style={styles.listIcon}>{item.icon}</Text>
             <View style={{ flex: 1 }}>
-              <Text style={[styles.listName, { color: COLORS.textSecondary }]}>{item.name}</Text>
-              <Text style={globalStyles.textSecondary}>
+              <Text style={[styles.listName, { color: C.textSecondary }]}>{item.name}</Text>
+              <Text style={gs.textSecondary}>
                 {total} товаров · {formatDate(item.completedAt)}
                 {totalSum > 0 ? ` · ${totalSum.toFixed(0)} ₽` : ''}
               </Text>
@@ -202,13 +278,27 @@ export default function ListsScreen({ navigate }) {
     <View style={styles.container}>
       {/* Шапка */}
       <View style={styles.header}>
-        <Text style={globalStyles.screenHeader}>Мои списки</Text>
-        <TouchableOpacity
-          style={styles.templateBtn}
-          onPress={() => setShowTemplates(true)}
-        >
-          <Text style={styles.templateBtnText}>📋 Шаблоны</Text>
-        </TouchableOpacity>
+        <Text style={gs.screenHeader}>Мои списки</Text>
+        <View style={styles.headerButtons}>
+          <TouchableOpacity
+            style={styles.templateBtn}
+            onPress={() => setShowTemplates(true)}
+          >
+            <Text style={styles.templateBtnText}>📋 Шаблоны</Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={styles.helpBtn}
+            onPress={() => navigate('help')}
+          >
+            <Text style={styles.helpBtnText}>?</Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={styles.helpBtn}
+            onPress={() => navigate('settings')}
+          >
+            <Text style={styles.helpBtnText}>⚙️</Text>
+          </TouchableOpacity>
+        </View>
       </View>
 
       {/* Список */}
@@ -218,16 +308,16 @@ export default function ListsScreen({ navigate }) {
         refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} />}
       >
         {activeLists.length === 0 && completedLists.length === 0 && (
-          <View style={globalStyles.emptyContainer}>
+          <View style={gs.emptyContainer}>
             <Text style={{ fontSize: 64 }}>🛒</Text>
-            <Text style={globalStyles.emptyText}>
+            <Text style={gs.emptyText}>
               У вас пока нет списков.{'\n'}Создайте первый!
             </Text>
           </View>
         )}
 
         {activeLists.map(item => (
-          <View key={item.id}>{renderListCard({ item })}</View>
+          <React.Fragment key={item.id}>{renderListCard({ item })}</React.Fragment>
         ))}
 
         {completedLists.length > 0 && (
@@ -242,7 +332,7 @@ export default function ListsScreen({ navigate }) {
               <Text style={styles.historyToggleArrow}>{showHistory ? '▲' : '▼'}</Text>
             </TouchableOpacity>
             {showHistory && completedLists.map(item => (
-              <View key={item.id}>{renderHistoryCard({ item })}</View>
+              <React.Fragment key={item.id}>{renderHistoryCard({ item })}</React.Fragment>
             ))}
           </View>
         )}
@@ -302,18 +392,125 @@ export default function ListsScreen({ navigate }) {
 
             <View style={styles.modalButtons}>
               <TouchableOpacity
-                style={[globalStyles.btnOutline, { flex: 1, marginRight: 8 }]}
+                style={[gs.btnOutline, { flex: 1, marginRight: 8 }]}
                 onPress={() => { setShowCreate(false); setNewName(''); }}
               >
-                <Text style={globalStyles.btnOutlineText}>Отмена</Text>
+                <Text style={gs.btnOutlineText}>Отмена</Text>
               </TouchableOpacity>
               <TouchableOpacity
-                style={[globalStyles.btnPrimary, { flex: 1 }]}
+                style={[gs.btnPrimary, { flex: 1 }]}
                 onPress={handleCreate}
               >
-                <Text style={globalStyles.btnPrimaryText}>Создать</Text>
+                <Text style={gs.btnPrimaryText}>Создать</Text>
               </TouchableOpacity>
             </View>
+          </View>
+        </View>
+      </Modal>
+
+      {/* Модалка: напоминание */}
+      <Modal visible={showReminderModal} transparent animationType="slide">
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalCard}>
+            <Text style={styles.modalTitle}>
+              🔔 Напоминание
+            </Text>
+            {reminderList && (
+              <Text style={styles.modalLabel}>
+                Список: {reminderList.icon} {reminderList.name}
+              </Text>
+            )}
+
+            {Platform.OS === 'ios' ? (
+              // iOS: единый inline-пикер даты и времени
+              <DateTimePicker
+                value={reminderDate}
+                mode="datetime"
+                display="spinner"
+                onChange={(_, d) => { if (d) setReminderDate(d); }}
+                minimumDate={new Date()}
+                locale="ru-RU"
+                style={{ marginVertical: 8 }}
+              />
+            ) : (
+              // Android: две кнопки — дата и время — открывают диалоги
+              <View style={{ marginVertical: 12 }}>
+                <TouchableOpacity
+                  style={styles.datePickerRow}
+                  onPress={() => setShowDatePicker(true)}
+                >
+                  <Text style={styles.datePickerLabel}>📅 Дата</Text>
+                  <Text style={styles.datePickerValue}>{formatReminderDate(reminderDate)}</Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={styles.datePickerRow}
+                  onPress={() => setShowTimePicker(true)}
+                >
+                  <Text style={styles.datePickerLabel}>🕐 Время</Text>
+                  <Text style={styles.datePickerValue}>{formatReminderTime(reminderDate)}</Text>
+                </TouchableOpacity>
+                {showDatePicker && (
+                  <DateTimePicker
+                    value={reminderDate}
+                    mode="date"
+                    display="default"
+                    minimumDate={new Date()}
+                    onChange={(e, d) => {
+                      setShowDatePicker(false);
+                      if (e.type === 'set' && d) {
+                        setReminderDate(prev => {
+                          const n = new Date(prev);
+                          n.setFullYear(d.getFullYear(), d.getMonth(), d.getDate());
+                          return n;
+                        });
+                      }
+                    }}
+                  />
+                )}
+                {showTimePicker && (
+                  <DateTimePicker
+                    value={reminderDate}
+                    mode="time"
+                    display="default"
+                    onChange={(e, d) => {
+                      setShowTimePicker(false);
+                      if (e.type === 'set' && d) {
+                        setReminderDate(prev => {
+                          const n = new Date(prev);
+                          n.setHours(d.getHours(), d.getMinutes(), 0, 0);
+                          return n;
+                        });
+                      }
+                    }}
+                  />
+                )}
+              </View>
+            )}
+
+            {/* Кнопки */}
+            <View style={styles.modalButtons}>
+              <TouchableOpacity
+                style={[gs.btnOutline, { flex: 1, marginRight: 8 }]}
+                onPress={() => setShowReminderModal(false)}
+              >
+                <Text style={gs.btnOutlineText}>Отмена</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[gs.btnPrimary, { flex: 1 }]}
+                onPress={handleSaveReminder}
+              >
+                <Text style={gs.btnPrimaryText}>Сохранить</Text>
+              </TouchableOpacity>
+            </View>
+
+            {reminderList?.reminder && (
+              <TouchableOpacity
+                style={styles.removeReminderBtn}
+                onPress={handleRemoveReminder}
+              >
+                <Text style={styles.removeReminderText}>🔕 Удалить напоминание</Text>
+              </TouchableOpacity>
+            )}
           </View>
         </View>
       </Modal>
@@ -333,7 +530,7 @@ export default function ListsScreen({ navigate }) {
                   <Text style={styles.templateEmoji}>{template.emoji}</Text>
                   <View style={{ flex: 1 }}>
                     <Text style={styles.templateName}>{template.label}</Text>
-                    <Text style={globalStyles.textSecondary}>{template.description}</Text>
+                    <Text style={gs.textSecondary}>{template.description}</Text>
                     <Text style={styles.templateCount}>{template.items.length} товаров</Text>
                   </View>
                   <Text style={styles.arrowIcon}>›</Text>
@@ -341,10 +538,10 @@ export default function ListsScreen({ navigate }) {
               ))}
             </ScrollView>
             <TouchableOpacity
-              style={[globalStyles.btnOutline, { marginTop: 12 }]}
+              style={[gs.btnOutline, { marginTop: 12 }]}
               onPress={() => setShowTemplates(false)}
             >
-              <Text style={globalStyles.btnOutlineText}>Закрыть</Text>
+              <Text style={gs.btnOutlineText}>Закрыть</Text>
             </TouchableOpacity>
           </View>
         </View>
@@ -353,30 +550,49 @@ export default function ListsScreen({ navigate }) {
   );
 }
 
-const styles = StyleSheet.create({
+const createStyles = (C, insets) => StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: COLORS.background,
+    backgroundColor: C.background,
   },
   header: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
     paddingHorizontal: theme.spacing.md,
-    paddingTop: Platform.OS === 'android' ? (StatusBar.currentHeight || 24) + 8 : theme.spacing.md,
+    paddingTop: insets.top + 8,
     paddingBottom: theme.spacing.sm,
-    backgroundColor: COLORS.background,
+    backgroundColor: C.background,
+  },
+  headerButtons: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
   },
   templateBtn: {
-    backgroundColor: COLORS.primaryLight,
+    backgroundColor: C.primaryLight,
     paddingHorizontal: 12,
     paddingVertical: 6,
     borderRadius: theme.radius.round,
   },
   templateBtnText: {
-    color: COLORS.primary,
+    color: C.primary,
     fontWeight: '600',
     fontSize: theme.font.small,
+  },
+  helpBtn: {
+    width: 30,
+    height: 30,
+    borderRadius: 15,
+    borderWidth: 2,
+    borderColor: C.primary,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  helpBtnText: {
+    color: C.primary,
+    fontWeight: '700',
+    fontSize: theme.font.body,
   },
   listContent: {
     padding: theme.spacing.md,
@@ -406,11 +622,11 @@ const styles = StyleSheet.create({
   listName: {
     fontSize: theme.font.subtitle,
     fontWeight: '700',
-    color: COLORS.textPrimary,
+    color: C.textPrimary,
   },
   arrowIcon: {
     fontSize: 28,
-    color: COLORS.textHint,
+    color: C.textHint,
     marginLeft: 4,
   },
   deleteBtn: {
@@ -418,14 +634,14 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     paddingHorizontal: 12,
     borderLeftWidth: 1,
-    borderLeftColor: COLORS.border,
+    borderLeftColor: C.border,
   },
   deleteBtnText: {
     fontSize: 20,
   },
   progressBg: {
     height: 4,
-    backgroundColor: COLORS.border,
+    backgroundColor: C.border,
     borderRadius: 2,
     marginTop: 10,
     overflow: 'hidden',
@@ -436,14 +652,14 @@ const styles = StyleSheet.create({
   },
   fab: {
     position: 'absolute',
-    bottom: 24,
+    bottom: insets.bottom + 16,
     left: theme.spacing.md,
     right: theme.spacing.md,
-    backgroundColor: COLORS.primary,
+    backgroundColor: C.primary,
     borderRadius: theme.radius.round,
     paddingVertical: 16,
     alignItems: 'center',
-    shadowColor: COLORS.primary,
+    shadowColor: C.primary,
     shadowOffset: { width: 0, height: 4 },
     shadowOpacity: 0.4,
     shadowRadius: 8,
@@ -461,7 +677,7 @@ const styles = StyleSheet.create({
     justifyContent: 'flex-end',
   },
   modalCard: {
-    backgroundColor: COLORS.surface,
+    backgroundColor: C.surface,
     borderTopLeftRadius: theme.radius.xl,
     borderTopRightRadius: theme.radius.xl,
     padding: theme.spacing.lg,
@@ -469,24 +685,24 @@ const styles = StyleSheet.create({
   modalTitle: {
     fontSize: theme.font.title,
     fontWeight: '800',
-    color: COLORS.textPrimary,
+    color: C.textPrimary,
     marginBottom: theme.spacing.md,
   },
   modalLabel: {
     fontSize: theme.font.body,
     fontWeight: '600',
-    color: COLORS.textSecondary,
+    color: C.textSecondary,
     marginTop: theme.spacing.sm,
     marginBottom: 6,
   },
   input: {
     borderWidth: 1.5,
-    borderColor: COLORS.border,
+    borderColor: C.border,
     borderRadius: theme.radius.md,
     padding: 12,
     fontSize: theme.font.subtitle,
-    color: COLORS.textPrimary,
-    backgroundColor: COLORS.background,
+    color: C.textPrimary,
+    backgroundColor: C.background,
   },
   iconsRow: {
     flexDirection: 'row',
@@ -497,22 +713,22 @@ const styles = StyleSheet.create({
     width: 56,
     paddingVertical: 6,
     borderRadius: theme.radius.sm,
-    backgroundColor: COLORS.background,
+    backgroundColor: C.background,
     alignItems: 'center',
     justifyContent: 'center',
     borderWidth: 2,
     borderColor: 'transparent',
   },
   iconBtnSelected: {
-    borderColor: COLORS.primary,
-    backgroundColor: COLORS.primaryLight,
+    borderColor: C.primary,
+    backgroundColor: C.primaryLight,
   },
   iconBtnText: {
     fontSize: 22,
   },
   iconBtnLabel: {
     fontSize: 9,
-    color: COLORS.textSecondary,
+    color: C.textSecondary,
     marginTop: 2,
     textAlign: 'center',
   },
@@ -522,15 +738,16 @@ const styles = StyleSheet.create({
     marginBottom: theme.spacing.md,
   },
   colorDot: {
-    width: 32,
-    height: 32,
-    borderRadius: 16,
-    borderWidth: 2,
+    width: 42,
+    height: 42,
+    borderRadius: 21,
+    borderWidth: 3,
     borderColor: 'transparent',
   },
   colorDotSelected: {
-    borderColor: COLORS.textPrimary,
-    transform: [{ scale: 1.2 }],
+    borderColor: C.textPrimary,
+    borderWidth: 3,
+    transform: [{ scale: 1.15 }],
   },
   modalButtons: {
     flexDirection: 'row',
@@ -547,25 +764,61 @@ const styles = StyleSheet.create({
     paddingVertical: 12,
     paddingHorizontal: 4,
     borderTopWidth: 1,
-    borderTopColor: COLORS.border,
+    borderTopColor: C.border,
   },
   historyToggleText: {
     fontSize: theme.font.body,
     fontWeight: '700',
-    color: COLORS.textSecondary,
+    color: C.textSecondary,
   },
   historyToggleArrow: {
     fontSize: 14,
-    color: COLORS.textHint,
+    color: C.textHint,
   },
   historyCard: {
     opacity: 0.75,
   },
   doneIcon: {
     fontSize: 20,
-    color: COLORS.success,
+    color: C.success,
     fontWeight: '700',
     marginLeft: 4,
+  },
+  // Напоминания
+  datePickerRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingVertical: 14,
+    paddingHorizontal: 12,
+    backgroundColor: C.background,
+    borderRadius: theme.radius.md,
+    marginBottom: 8,
+    borderWidth: 1.5,
+    borderColor: C.border,
+  },
+  datePickerLabel: {
+    fontSize: theme.font.body,
+    fontWeight: '600',
+    color: C.textSecondary,
+  },
+  datePickerValue: {
+    fontSize: theme.font.body,
+    fontWeight: '700',
+    color: C.primary,
+  },
+  removeReminderBtn: {
+    marginTop: 12,
+    paddingVertical: 12,
+    alignItems: 'center',
+    borderRadius: theme.radius.md,
+    borderWidth: 1.5,
+    borderColor: C.danger || '#e74c3c',
+  },
+  removeReminderText: {
+    fontSize: theme.font.body,
+    fontWeight: '600',
+    color: C.danger || '#e74c3c',
   },
   // Шаблоны
   templateItem: {
@@ -573,7 +826,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     paddingVertical: 12,
     borderBottomWidth: 1,
-    borderBottomColor: COLORS.border,
+    borderBottomColor: C.border,
   },
   templateEmoji: {
     fontSize: 32,
@@ -582,11 +835,11 @@ const styles = StyleSheet.create({
   templateName: {
     fontSize: theme.font.body,
     fontWeight: '700',
-    color: COLORS.textPrimary,
+    color: C.textPrimary,
   },
   templateCount: {
     fontSize: theme.font.small,
-    color: COLORS.primary,
+    color: C.primary,
     fontWeight: '600',
     marginTop: 2,
   },

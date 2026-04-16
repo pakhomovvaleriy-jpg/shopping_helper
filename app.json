@@ -21,20 +21,26 @@
         "backgroundColor": "#ffffff"
       },
       "package": "com.shopping.helper",
+      "versionCode": 1,
+      "edgeToEdgeEnabled": true,
+      "googleServicesFile": "./google-services.json",
       "permissions": [
-        "RECORD_AUDIO",
         "INTERNET",
-        "android.permission.RECORD_AUDIO",
-        "android.permission.MODIFY_AUDIO_SETTINGS"
+        "RECEIVE_BOOT_COMPLETED",
+        "SCHEDULE_EXACT_ALARM"
       ]
     },
     "plugins": [
+      "@react-native-community/datetimepicker",
       [
-        "expo-av",
+        "expo-notifications",
         {
-          "microphonePermission": "Разрешите доступ к микрофону для голосового ввода"
+          "icon": "./assets/icon.png",
+          "color": "#4CAF50",
+          "sounds": []
         }
-      ]
+      ],
+      "@react-native-firebase/app"
     ],
     "extra": {
       "eas": {

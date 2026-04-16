@@ -5,6 +5,7 @@
 export const STORAGE_KEYS = {
   LISTS: 'shopping_lists',           // все списки покупок
   SETTINGS: 'app_settings',          // настройки приложения
+  PRICES: 'item_prices',             // база цен товаров
 };
 
 // Категории товаров (порядок = порядок в магазине)

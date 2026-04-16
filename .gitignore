@@ -1,0 +1,12 @@
+node_modules/
+.expo
+.expo/
+dist/
+build/
+/android
+/ios
+
+# Секреты — никогда не коммитить!
+.env
+.env.local
+.env.production

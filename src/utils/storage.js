@@ -197,14 +197,72 @@ export const removeCheckedItems = async (listId) => {
   await saveLists(lists);
 };
 
+// ─── БАЗА ЦЕН ───────────────────────────────────────────────────────────────
+
+// Получить все сохранённые цены { 'молоко': { price: 89, unit: 'л' }, ... }
+export const getPrices = async () => {
+  try {
+    const json = await AsyncStorage.getItem(STORAGE_KEYS.PRICES);
+    return json ? JSON.parse(json) : {};
+  } catch {
+    return {};
+  }
+};
+
+// Сохранить цену для товара
+export const saveItemPrice = async (name, price, unit) => {
+  if (!name || !price || price <= 0) return;
+  try {
+    const prices = await getPrices();
+    prices[name.toLowerCase().trim()] = { price, unit };
+    await AsyncStorage.setItem(STORAGE_KEYS.PRICES, JSON.stringify(prices));
+  } catch (e) {
+    console.log('saveItemPrice error:', e);
+  }
+};
+
+// Получить цену для конкретного товара
+export const getItemPrice = async (name) => {
+  if (!name) return null;
+  const prices = await getPrices();
+  return prices[name.toLowerCase().trim()] || null;
+};
+
 // ─── НАСТРОЙКИ ──────────────────────────────────────────────────────────────
+
+const DEFAULT_SETTINGS = {
+  isPremium: false,
+  aiHintsUsedToday: 0,
+  aiHintsDate: '',
+  defaultSort: 'category',   // category | alpha | price | added
+  stayOnAddScreen: false,    // оставаться на экране добавления после добавления товара
+};
 
 export const getSettings = async () => {
   try {
     const json = await AsyncStorage.getItem(STORAGE_KEYS.SETTINGS);
-    return json ? JSON.parse(json) : { isPremium: false, aiHintsUsedToday: 0, aiHintsDate: '' };
+    return json ? { ...DEFAULT_SETTINGS, ...JSON.parse(json) } : DEFAULT_SETTINGS;
   } catch {
-    return { isPremium: false, aiHintsUsedToday: 0, aiHintsDate: '' };
+    return DEFAULT_SETTINGS;
+  }
+};
+
+// Очистить базу цен
+export const clearPrices = async () => {
+  try {
+    await AsyncStorage.removeItem(STORAGE_KEYS.PRICES);
+  } catch (e) {
+    console.log('clearPrices error:', e);
+  }
+};
+
+// Очистить историю покупок (завершённые списки)
+export const clearHistory = async () => {
+  try {
+    const lists = await getLists();
+    await saveLists(lists.filter(l => !l.completedAt));
+  } catch (e) {
+    console.log('clearHistory error:', e);
   }
 };
 

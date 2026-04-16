@@ -2,20 +2,32 @@
 // Показывает товары сгруппированные по категориям
 // Галочки, удаление, переход к добавлению
 
-import React, { useState, useCallback } from 'react';
+import React, { useState, useCallback, useMemo } from 'react';
 import {
-  View, Text, FlatList, TouchableOpacity, TextInput, Modal,
-  StyleSheet, Alert, ScrollView, Platform, StatusBar,
+  View, Text, TouchableOpacity, TextInput, Modal,
+  StyleSheet, Alert, ScrollView, Share,
 } from 'react-native';
-import { COLORS } from '../config/colors';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { useTheme } from '../context/ThemeContext';
 import { CATEGORIES, UNITS } from '../config/constants';
-import { globalStyles, theme } from '../styles/theme';
+import { theme } from '../styles/theme';
 import {
   getListById, toggleItemChecked, removeItemFromList,
-  resetCheckedItems, removeCheckedItems, updateItemInList, completeList,
+  resetCheckedItems, removeCheckedItems, updateItemInList, completeList, saveItemPrice, getSettings,
 } from '../utils/storage';
+import { logCompleteList } from '../utils/analytics';
+
+const SORT_MODES = [
+  { id: 'category', label: 'По категориям', short: 'Категории' },
+  { id: 'alpha',    label: 'По алфавиту',   short: 'Алфавит' },
+  { id: 'price',    label: 'По цене',        short: 'Цена' },
+  { id: 'added',    label: 'По добавлению',  short: 'Порядок' },
+];
 
 export default function ShoppingScreen({ navigate, params }) {
+  const { colors: C, gs } = useTheme();
+  const insets = useSafeAreaInsets();
+  const styles = useMemo(() => createStyles(C, insets), [C, insets]);
   const { listId } = params;
   const [list, setList] = useState(null);
 
@@ -24,14 +36,7 @@ export default function ShoppingScreen({ navigate, params }) {
   const [showSearch, setShowSearch] = useState(false);
 
   // Сортировка
-  const [sortMode, setSortMode] = useState('category'); // category | alpha | price | added
-
-  const SORT_MODES = [
-    { id: 'category', label: 'По категориям' },
-    { id: 'alpha',    label: 'По алфавиту' },
-    { id: 'price',    label: 'По цене' },
-    { id: 'added',    label: 'По добавлению' },
-  ];
+  const [sortMode, setSortMode] = useState('category');
 
   // Редактирование товара
   const [editItem, setEditItem] = useState(null); // товар для редактирования
@@ -48,6 +53,10 @@ export default function ShoppingScreen({ navigate, params }) {
     loadList();
   }, [loadList]);
 
+  React.useEffect(() => {
+    getSettings().then(s => setSortMode(s.defaultSort || 'category')).catch(() => {});
+  }, []);
+
   const handleToggle = async (itemId) => {
     await toggleItemChecked(listId, itemId);
     loadList();
@@ -63,6 +72,7 @@ export default function ShoppingScreen({ navigate, params }) {
           text: 'Завершить',
           onPress: async () => {
             await completeList(listId);
+            logCompleteList();
             navigate('lists');
           },
         },
@@ -78,11 +88,13 @@ export default function ShoppingScreen({ navigate, params }) {
   };
 
   const handleSaveEdit = async () => {
+    const price = parseFloat(editPrice) || 0;
     await updateItemInList(listId, editItem.id, {
       quantity: parseFloat(editQty) || 1,
       unit: editUnit,
-      price: parseFloat(editPrice) || 0,
+      price,
     });
+    if (price > 0) await saveItemPrice(editItem.name, price, editUnit);
     setEditItem(null);
     loadList();
   };
@@ -106,6 +118,26 @@ export default function ShoppingScreen({ navigate, params }) {
     ]);
   };
 
+  const handleShare = async () => {
+    const unchecked = items.filter(i => !i.checked);
+    const checked = items.filter(i => i.checked);
+    const formatItem = (i, done) =>
+      `${done ? '✅' : '⬜'} ${i.emoji} ${i.name} — ${i.quantity} ${i.unit}`;
+
+    const lines = [
+      `${list.icon} ${list.name}`,
+      '',
+      ...[...unchecked, ...checked].map(i => formatItem(i, i.checked)),
+    ];
+    if (hasPrices) {
+      lines.push('');
+      lines.push(`Итого: ${totalSum.toFixed(0)} ₽`);
+    }
+    try {
+      await Share.share({ message: lines.join('\n') });
+    } catch (_) {}
+  };
+
   const handleRemoveChecked = async () => {
     const checked = list?.items.filter(i => i.checked).length || 0;
     if (checked === 0) return;
@@ -121,54 +153,64 @@ export default function ShoppingScreen({ navigate, params }) {
     ]);
   };
 
-  if (!list) return (
-    <View style={styles.container}>
-      <Text style={globalStyles.textSecondary}>Загрузка...</Text>
-    </View>
-  );
-
-  const items = list.items || [];
+  const items = list?.items || [];
   const checkedCount = items.filter(i => i.checked).length;
   const totalCount = items.length;
 
-  // Подсчёт сумм
+  // г и мл — итоговая цена, остальные — цена за единицу × количество
+  const itemTotal = (item) =>
+    (item.unit === 'г' || item.unit === 'мл')
+      ? item.price
+      : item.quantity * item.price;
+
   const totalSum = items
     .filter(i => i.price > 0)
-    .reduce((sum, i) => sum + i.quantity * i.price, 0);
+    .reduce((sum, i) => sum + itemTotal(i), 0);
   const boughtSum = items
     .filter(i => i.checked && i.price > 0)
-    .reduce((sum, i) => sum + i.quantity * i.price, 0);
+    .reduce((sum, i) => sum + itemTotal(i), 0);
   const hasPrices = totalSum > 0;
 
-  // Фильтрация по поиску
-  const filteredItems = searchText.trim()
-    ? items.filter(i => i.name.toLowerCase().includes(searchText.toLowerCase()))
-    : items;
+  // Фильтрация и группировка — хук до раннего return
+  const grouped = useMemo(() => {
+    const filteredItems = searchText.trim()
+      ? items.filter(i => i.name.toLowerCase().includes(searchText.toLowerCase()))
+      : items;
 
-  // Сортировка и группировка
-  const sortItems = (arr) => {
-    const sorted = [...arr];
-    if (sortMode === 'alpha') return sorted.sort((a, b) => a.name.localeCompare(b.name, 'ru'));
-    if (sortMode === 'price') return sorted.sort((a, b) => (b.price || 0) - (a.price || 0));
-    if (sortMode === 'added') return sorted; // порядок добавления
-    return sorted; // category — группировка ниже
-  };
-
-  let grouped = [];
-  if (sortMode === 'category') {
-    grouped = CATEGORIES
-      .map(cat => ({
-        ...cat,
-        items: filteredItems.filter(i => i.category === cat.id),
-      }))
-      .filter(cat => cat.items.length > 0);
-    const otherItems = filteredItems.filter(i => !CATEGORIES.find(c => c.id === i.category));
-    if (otherItems.length > 0) {
-      grouped.push({ id: 'other', label: 'Другое', emoji: '📦', colorKey: 'categoryOther', items: otherItems });
+    if (sortMode === 'category') {
+      const result = CATEGORIES
+        .map(cat => ({ ...cat, items: filteredItems.filter(i => i.category === cat.id) }))
+        .filter(cat => cat.items.length > 0);
+      const otherItems = filteredItems.filter(i => !CATEGORIES.find(c => c.id === i.category));
+      if (otherItems.length > 0) {
+        result.push({ id: 'other', label: 'Другое', emoji: '📦', colorKey: 'categoryOther', items: otherItems });
+      }
+      return result;
     }
-  } else {
-    grouped = [{ id: 'all', label: SORT_MODES.find(s => s.id === sortMode).label, emoji: '📋', colorKey: 'categoryOther', items: sortItems(filteredItems) }];
-  }
+
+    const sorted = [...filteredItems];
+    if (sortMode === 'alpha') sorted.sort((a, b) => a.name.localeCompare(b.name, 'ru'));
+    if (sortMode === 'price') {
+      sorted.sort((a, b) => {
+        const getTotal = (i) => i.price > 0
+          ? (i.unit === 'г' || i.unit === 'мл' ? i.price : i.quantity * i.price)
+          : -1;
+        const aT = getTotal(a);
+        const bT = getTotal(b);
+        if (aT < 0 && bT < 0) return 0;
+        if (aT < 0) return 1;
+        if (bT < 0) return -1;
+        return bT - aT;
+      });
+    }
+    return [{ id: 'all', label: SORT_MODES.find(s => s.id === sortMode).label, emoji: '📋', colorKey: 'categoryOther', items: sorted }];
+  }, [items, sortMode, searchText]);
+
+  if (!list) return (
+    <View style={[styles.container, gs.emptyContainer]}>
+      <Text style={gs.textSecondary}>Загрузка...</Text>
+    </View>
+  );
 
   const renderItem = (item) => (
     <TouchableOpacity
@@ -188,14 +230,18 @@ export default function ShoppingScreen({ navigate, params }) {
         <Text style={[styles.itemName, item.checked && styles.itemNameChecked]}>
           {item.emoji} {item.name}
         </Text>
-        <Text style={globalStyles.textSecondary}>
+        <Text style={gs.textSecondary}>
           {item.quantity} {item.unit}
-          {item.price > 0 ? `  ·  ${item.price} ₽` : ''}
+          {item.price > 0
+            ? (item.unit === 'г' || item.unit === 'мл')
+              ? `  ·  ${item.price} ₽`
+              : `  ·  ${item.price} ₽/${item.unit}`
+            : ''}
         </Text>
       </View>
       {item.price > 0 && (
-        <Text style={[styles.itemTotal, item.checked && { color: COLORS.textHint }]}>
-          {(item.quantity * item.price).toFixed(0)} ₽
+        <Text style={[styles.itemTotal, item.checked && { color: C.textHint }]}>
+          {itemTotal(item).toFixed(0)} ₽
         </Text>
       )}
     </TouchableOpacity>
@@ -203,10 +249,10 @@ export default function ShoppingScreen({ navigate, params }) {
 
   const renderCategory = (cat) => (
     <View key={cat.id} style={styles.categorySection}>
-      <View style={[styles.categoryHeader, { borderLeftColor: COLORS[cat.colorKey] }]}>
+      <View style={[styles.categoryHeader, { borderLeftColor: C[cat.colorKey] }]}>
         <Text style={styles.categoryEmoji}>{cat.emoji}</Text>
         <Text style={styles.categoryLabel}>{cat.label}</Text>
-        <Text style={globalStyles.textSecondary}>
+        <Text style={gs.textSecondary}>
           {cat.items.filter(i => i.checked).length}/{cat.items.length}
         </Text>
       </View>
@@ -218,35 +264,44 @@ export default function ShoppingScreen({ navigate, params }) {
     <View style={styles.container}>
       {/* Шапка */}
       <View style={styles.header}>
-        <TouchableOpacity onPress={() => navigate('lists')} style={styles.backBtn}>
-          <Text style={styles.backBtnText}>‹ Назад</Text>
-        </TouchableOpacity>
-        <View style={{ flex: 1 }}>
-          <Text style={styles.headerTitle} numberOfLines={1}>
-            {list.icon} {list.name}
-          </Text>
-          <Text style={globalStyles.textSecondary}>
-            {checkedCount} из {totalCount} куплено
-          </Text>
+        <View style={styles.headerTopRow}>
+          <TouchableOpacity onPress={() => navigate('lists')} style={styles.backBtn}>
+            <Text style={styles.backBtnText}>‹ Назад</Text>
+          </TouchableOpacity>
+          <View style={styles.headerActions}>
+            <TouchableOpacity
+              style={styles.sortBtn}
+              onPress={() => {
+                const idx = SORT_MODES.findIndex(s => s.id === sortMode);
+                setSortMode(SORT_MODES[(idx + 1) % SORT_MODES.length].id);
+              }}
+            >
+              <Text style={styles.sortBtnIcon}>⇅</Text>
+              <Text style={styles.sortBtnText}>
+                {SORT_MODES.find(s => s.id === sortMode).short}
+              </Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[styles.sortBtn, { marginLeft: 6 }]}
+              onPress={() => { setShowSearch(!showSearch); setSearchText(''); }}
+            >
+              <Text style={styles.sortBtnIcon}>🔍</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[styles.sortBtn, { marginLeft: 6 }]}
+              onPress={handleShare}
+            >
+              <Text style={styles.sortBtnIcon}>↑</Text>
+              <Text style={styles.sortBtnText}>Послать</Text>
+            </TouchableOpacity>
+          </View>
         </View>
-        <TouchableOpacity
-          style={styles.sortBtn}
-          onPress={() => {
-            const idx = SORT_MODES.findIndex(s => s.id === sortMode);
-            setSortMode(SORT_MODES[(idx + 1) % SORT_MODES.length].id);
-          }}
-        >
-          <Text style={styles.sortBtnIcon}>⇅</Text>
-          <Text style={styles.sortBtnText}>
-            {SORT_MODES.find(s => s.id === sortMode).label.split(' ')[1]}
-          </Text>
-        </TouchableOpacity>
-        <TouchableOpacity
-          style={[styles.sortBtn, { marginLeft: 6 }]}
-          onPress={() => { setShowSearch(!showSearch); setSearchText(''); }}
-        >
-          <Text style={styles.sortBtnIcon}>🔍</Text>
-        </TouchableOpacity>
+        <Text style={styles.headerTitle} numberOfLines={1}>
+          {list.icon} {list.name}
+        </Text>
+        <Text style={styles.headerSubtitle}>
+          {checkedCount} из {totalCount} куплено
+        </Text>
       </View>
 
       {/* Строка поиска */}
@@ -285,9 +340,9 @@ export default function ShoppingScreen({ navigate, params }) {
 
       {/* Список по категориям */}
       {items.length === 0 ? (
-        <View style={globalStyles.emptyContainer}>
+        <View style={gs.emptyContainer}>
           <Text style={{ fontSize: 64 }}>📝</Text>
-          <Text style={globalStyles.emptyText}>Список пуст.{'\n'}Добавьте товары!</Text>
+          <Text style={gs.emptyText}>Список пуст.{'\n'}Добавьте товары!</Text>
         </View>
       ) : (
         <ScrollView
@@ -344,7 +399,9 @@ export default function ShoppingScreen({ navigate, params }) {
               selectTextOnFocus
             />
 
-            <Text style={styles.modalLabel}>Цена за единицу (₽)</Text>
+            <Text style={styles.modalLabel}>
+              {(editUnit === 'г' || editUnit === 'мл') ? 'Стоимость товара (₽)' : `Цена за 1 ${editUnit} (₽)`}
+            </Text>
             <TextInput
               style={[styles.modalQtyInput, { fontSize: theme.font.body, marginBottom: 16 }]}
               value={editPrice}
@@ -386,81 +443,86 @@ export default function ShoppingScreen({ navigate, params }) {
 
       {/* Нижняя панель действий */}
       <View style={styles.bottomBar}>
-        {/* Кнопка назад — всегда видна */}
-        <TouchableOpacity style={styles.backBigBtn} onPress={() => navigate('lists')}>
-          <Text style={styles.backBigBtnText}>← Мои списки</Text>
-        </TouchableOpacity>
-
-        {/* Кнопка завершить — когда всё куплено */}
-        {totalCount > 0 && checkedCount === totalCount && (
-          <TouchableOpacity style={styles.completeBtn} onPress={handleCompleteList}>
-            <Text style={styles.completeBtnText}>🎉 Завершить список</Text>
+        {totalCount > 0 && checkedCount === totalCount ? (
+          <TouchableOpacity style={styles.btnSuccess} onPress={handleCompleteList}>
+            <Text style={styles.btnText}>🎉 Завершить список</Text>
           </TouchableOpacity>
+        ) : (
+          <View style={styles.bottomActions}>
+            {checkedCount > 0 && (
+              <TouchableOpacity style={styles.btnSecondary} onPress={handleRemoveChecked}>
+                <Text style={styles.btnSecondaryText}>🗑 Купленное</Text>
+              </TouchableOpacity>
+            )}
+            {checkedCount > 0 && (
+              <TouchableOpacity style={styles.btnSecondary} onPress={handleResetAll}>
+                <Text style={styles.btnSecondaryText}>↩ Сброс</Text>
+              </TouchableOpacity>
+            )}
+            <TouchableOpacity
+              style={styles.btnPrimary}
+              onPress={() => navigate('add', { listId })}
+            >
+              <Text style={styles.btnText}>+ Добавить</Text>
+            </TouchableOpacity>
+          </View>
         )}
-
-        <View style={styles.bottomActions}>
-          {checkedCount > 0 && checkedCount < totalCount && (
-            <TouchableOpacity style={styles.actionBtn} onPress={handleRemoveChecked}>
-              <Text style={styles.actionBtnText}>🗑 Купленное</Text>
-            </TouchableOpacity>
-          )}
-          {checkedCount > 0 && totalCount > checkedCount && (
-            <TouchableOpacity style={styles.actionBtn} onPress={handleResetAll}>
-              <Text style={styles.actionBtnText}>↩ Сброс</Text>
-            </TouchableOpacity>
-          )}
-          <TouchableOpacity
-            style={styles.addBtn}
-            onPress={() => navigate('add', { listId })}
-          >
-            <Text style={styles.addBtnText}>+ Добавить</Text>
-          </TouchableOpacity>
-        </View>
       </View>
     </View>
   );
 }
 
-const styles = StyleSheet.create({
+const createStyles = (C, insets) => StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: COLORS.background,
+    backgroundColor: C.background,
   },
   header: {
+    paddingHorizontal: theme.spacing.md,
+    paddingTop: insets.top + 8,
+    paddingBottom: theme.spacing.sm,
+    backgroundColor: C.surface,
+    borderBottomWidth: 1,
+    borderBottomColor: C.border,
+  },
+  headerTopRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    paddingHorizontal: theme.spacing.md,
-    paddingVertical: theme.spacing.sm,
-    paddingTop: Platform.OS === 'android' ? (StatusBar.currentHeight || 24) + 8 : theme.spacing.sm,
-    backgroundColor: COLORS.surface,
-    borderBottomWidth: 1,
-    borderBottomColor: COLORS.border,
+    justifyContent: 'space-between',
+    marginBottom: 4,
+  },
+  headerActions: {
+    flexDirection: 'row',
   },
   backBtn: {
-    marginRight: theme.spacing.sm,
     paddingVertical: 4,
   },
   backBtnText: {
     fontSize: theme.font.title,
-    color: COLORS.primary,
+    color: C.primary,
     fontWeight: '600',
+  },
+  headerSubtitle: {
+    fontSize: theme.font.small,
+    color: C.textSecondary,
+    marginTop: 2,
   },
   sortBtn: {
     alignItems: 'center',
     paddingHorizontal: 10,
     paddingVertical: 6,
     borderRadius: theme.radius.md,
-    backgroundColor: COLORS.background,
+    backgroundColor: C.background,
     borderWidth: 1,
-    borderColor: COLORS.border,
+    borderColor: C.border,
   },
   sortBtnIcon: {
     fontSize: 14,
-    color: COLORS.primary,
+    color: C.primary,
   },
   sortBtnText: {
     fontSize: 10,
-    color: COLORS.textSecondary,
+    color: C.textSecondary,
     fontWeight: '600',
   },
   searchBar: {
@@ -468,20 +530,20 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     paddingHorizontal: theme.spacing.md,
     paddingVertical: 8,
-    backgroundColor: COLORS.surface,
+    backgroundColor: C.surface,
     borderBottomWidth: 1,
-    borderBottomColor: COLORS.border,
+    borderBottomColor: C.border,
   },
   searchInput: {
     flex: 1,
-    backgroundColor: COLORS.background,
+    backgroundColor: C.background,
     borderRadius: theme.radius.round,
     paddingHorizontal: 14,
     paddingVertical: 8,
     fontSize: theme.font.body,
-    color: COLORS.textPrimary,
+    color: C.textPrimary,
     borderWidth: 1,
-    borderColor: COLORS.border,
+    borderColor: C.border,
   },
   searchClear: {
     paddingHorizontal: 10,
@@ -489,23 +551,23 @@ const styles = StyleSheet.create({
   },
   searchClearText: {
     fontSize: 16,
-    color: COLORS.textHint,
+    color: C.textHint,
   },
   headerTitle: {
     fontSize: theme.font.subtitle,
     fontWeight: '700',
-    color: COLORS.textPrimary,
+    color: C.textPrimary,
   },
   progressContainer: {
     paddingHorizontal: theme.spacing.md,
     paddingVertical: 8,
-    backgroundColor: COLORS.surface,
+    backgroundColor: C.surface,
     borderBottomWidth: 1,
-    borderBottomColor: COLORS.border,
+    borderBottomColor: C.border,
   },
   progressBg: {
     height: 6,
-    backgroundColor: COLORS.border,
+    backgroundColor: C.border,
     borderRadius: 3,
     overflow: 'hidden',
   },
@@ -516,13 +578,13 @@ const styles = StyleSheet.create({
   doneText: {
     textAlign: 'center',
     marginTop: 6,
-    color: COLORS.success,
+    color: C.success,
     fontWeight: '700',
     fontSize: theme.font.body,
   },
   listContent: {
     padding: theme.spacing.md,
-    paddingBottom: 100,
+    paddingBottom: 180,
   },
   categorySection: {
     marginBottom: theme.spacing.md,
@@ -542,14 +604,14 @@ const styles = StyleSheet.create({
     flex: 1,
     fontSize: theme.font.body,
     fontWeight: '700',
-    color: COLORS.textSecondary,
+    color: C.textSecondary,
     textTransform: 'uppercase',
     letterSpacing: 0.5,
   },
   itemRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: COLORS.surface,
+    backgroundColor: C.surface,
     borderRadius: theme.radius.md,
     padding: 12,
     marginBottom: 6,
@@ -561,21 +623,21 @@ const styles = StyleSheet.create({
   },
   itemRowChecked: {
     opacity: 0.55,
-    backgroundColor: COLORS.background,
+    backgroundColor: C.background,
   },
   checkbox: {
     width: 26,
     height: 26,
     borderRadius: 13,
     borderWidth: 2,
-    borderColor: COLORS.textHint,
+    borderColor: C.textHint,
     marginRight: 12,
     alignItems: 'center',
     justifyContent: 'center',
   },
   checkboxChecked: {
-    backgroundColor: COLORS.success,
-    borderColor: COLORS.success,
+    backgroundColor: C.success,
+    borderColor: C.success,
   },
   checkmark: {
     color: '#fff',
@@ -585,25 +647,25 @@ const styles = StyleSheet.create({
   itemName: {
     fontSize: theme.font.body,
     fontWeight: '600',
-    color: COLORS.textPrimary,
+    color: C.textPrimary,
   },
   itemNameChecked: {
     textDecorationLine: 'line-through',
-    color: COLORS.textHint,
+    color: C.textHint,
   },
   itemTotal: {
     fontSize: theme.font.body,
     fontWeight: '700',
-    color: COLORS.primary,
+    color: C.primary,
     marginLeft: 8,
   },
   totalBox: {
-    backgroundColor: COLORS.surface,
+    backgroundColor: C.surface,
     borderRadius: theme.radius.md,
     padding: 16,
     marginTop: 8,
     borderWidth: 1.5,
-    borderColor: COLORS.border,
+    borderColor: C.border,
   },
   totalRow: {
     flexDirection: 'row',
@@ -611,7 +673,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     paddingVertical: 6,
     borderBottomWidth: 1,
-    borderBottomColor: COLORS.border,
+    borderBottomColor: C.border,
   },
   totalFinalRow: {
     borderBottomWidth: 0,
@@ -619,87 +681,70 @@ const styles = StyleSheet.create({
   },
   totalLabel: {
     fontSize: theme.font.body,
-    color: COLORS.textSecondary,
+    color: C.textSecondary,
   },
   totalValue: {
     fontSize: theme.font.body,
     fontWeight: '600',
-    color: COLORS.textSecondary,
+    color: C.textSecondary,
   },
   totalFinalLabel: {
     fontSize: theme.font.subtitle,
     fontWeight: '700',
-    color: COLORS.textPrimary,
+    color: C.textPrimary,
   },
   totalFinalValue: {
     fontSize: theme.font.subtitle,
     fontWeight: '700',
-    color: COLORS.primary,
+    color: C.primary,
   },
   bottomBar: {
     position: 'absolute',
     bottom: 0,
     left: 0,
     right: 0,
-    backgroundColor: COLORS.surface,
+    backgroundColor: C.surface,
     borderTopWidth: 1,
-    borderTopColor: COLORS.border,
-    padding: theme.spacing.md,
-    gap: 8,
-  },
-  backBigBtn: {
-    backgroundColor: COLORS.background,
-    borderRadius: theme.radius.round,
-    paddingVertical: 10,
-    alignItems: 'center',
-    borderWidth: 1.5,
-    borderColor: COLORS.divider,
-  },
-  backBigBtnText: {
-    fontSize: theme.font.body,
-    fontWeight: '700',
-    color: COLORS.textSecondary,
+    borderTopColor: C.border,
+    paddingTop: theme.spacing.md,
+    paddingHorizontal: theme.spacing.md,
+    paddingBottom: insets.bottom + theme.spacing.md,
   },
   bottomActions: {
     flexDirection: 'row',
     gap: 8,
   },
-  actionBtn: {
-    borderWidth: 1,
-    borderColor: COLORS.divider,
+  btnPrimary: {
+    flex: 1,
+    backgroundColor: C.primary,
+    borderRadius: theme.radius.round,
+    paddingVertical: 10,
+    alignItems: 'center',
+  },
+  btnSuccess: {
+    backgroundColor: C.success,
+    borderRadius: theme.radius.round,
+    paddingVertical: 10,
+    alignItems: 'center',
+  },
+  btnSecondary: {
+    borderWidth: 1.5,
+    borderColor: C.border,
     borderRadius: theme.radius.round,
     paddingVertical: 10,
     paddingHorizontal: 14,
-    backgroundColor: COLORS.background,
+    backgroundColor: C.background,
+    alignItems: 'center',
   },
-  actionBtnText: {
+  btnText: {
+    color: '#fff',
+    fontWeight: '700',
     fontSize: theme.font.small,
-    color: COLORS.textSecondary,
-    fontWeight: '600',
   },
-  addBtn: {
-    flex: 1,
-    backgroundColor: COLORS.primary,
-    borderRadius: theme.radius.round,
-    paddingVertical: 12,
-    alignItems: 'center',
-  },
-  addBtnText: {
-    color: '#fff',
+  btnSecondaryText: {
+    fontSize: theme.font.small,
     fontWeight: '700',
-    fontSize: theme.font.body,
-  },
-  completeBtn: {
-    backgroundColor: COLORS.success,
-    borderRadius: theme.radius.round,
-    paddingVertical: 13,
-    alignItems: 'center',
-    marginBottom: 8,
-  },
-  completeBtnText: {
-    color: '#fff',
-    fontWeight: '700',
-    fontSize: theme.font.body,
+    color: C.textSecondary,
   },
   modalOverlay: {
     flex: 1,
@@ -707,7 +752,7 @@ const styles = StyleSheet.create({
     justifyContent: 'flex-end',
   },
   modalBox: {
-    backgroundColor: COLORS.surface,
+    backgroundColor: C.surface,
     borderTopLeftRadius: 20,
     borderTopRightRadius: 20,
     padding: 24,
@@ -716,29 +761,29 @@ const styles = StyleSheet.create({
   modalTitle: {
     fontSize: theme.font.subtitle,
     fontWeight: '700',
-    color: COLORS.textPrimary,
+    color: C.textPrimary,
     marginBottom: 20,
     textAlign: 'center',
   },
   modalLabel: {
     fontSize: theme.font.small,
     fontWeight: '600',
-    color: COLORS.textSecondary,
+    color: C.textSecondary,
     textTransform: 'uppercase',
     letterSpacing: 0.5,
     marginBottom: 8,
   },
   modalQtyInput: {
     borderWidth: 1.5,
-    borderColor: COLORS.border,
+    borderColor: C.border,
     borderRadius: theme.radius.md,
     padding: 12,
     fontSize: 24,
     fontWeight: '700',
-    color: COLORS.textPrimary,
+    color: C.textPrimary,
     textAlign: 'center',
     marginBottom: 16,
-    backgroundColor: COLORS.background,
+    backgroundColor: C.background,
   },
   unitsRow: {
     flexDirection: 'row',
@@ -748,21 +793,21 @@ const styles = StyleSheet.create({
     paddingHorizontal: 14,
     paddingVertical: 8,
     borderRadius: theme.radius.round,
-    backgroundColor: COLORS.background,
+    backgroundColor: C.background,
     borderWidth: 1.5,
-    borderColor: COLORS.border,
+    borderColor: C.border,
   },
   unitBtnSelected: {
-    backgroundColor: COLORS.primary,
-    borderColor: COLORS.primary,
+    backgroundColor: C.primary,
+    borderColor: C.primary,
   },
   unitBtnText: {
     fontSize: theme.font.small,
     fontWeight: '600',
-    color: COLORS.textSecondary,
+    color: C.textSecondary,
   },
   modalSaveBtn: {
-    backgroundColor: COLORS.primary,
+    backgroundColor: C.primary,
     borderRadius: theme.radius.round,
     paddingVertical: 14,
     alignItems: 'center',
@@ -778,10 +823,10 @@ const styles = StyleSheet.create({
     paddingVertical: 12,
     alignItems: 'center',
     borderWidth: 1.5,
-    borderColor: COLORS.error || '#e53935',
+    borderColor: C.danger,
   },
   modalDeleteBtnText: {
-    color: COLORS.error || '#e53935',
+    color: C.danger,
     fontWeight: '600',
     fontSize: theme.font.body,
   },

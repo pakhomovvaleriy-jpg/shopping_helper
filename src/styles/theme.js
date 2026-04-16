@@ -2,7 +2,6 @@
 // Используй вместо дублирования одинаковых стилей
 
 import { StyleSheet } from 'react-native';
-import { COLORS } from '../config/colors';
 
 export const theme = {
   // Отступы
@@ -32,10 +31,10 @@ export const theme = {
   },
 };
 
-export const globalStyles = StyleSheet.create({
-  // Карточка
+// Динамические глобальные стили — вызывай createGlobalStyles(colors) внутри компонента
+export const createGlobalStyles = (C) => StyleSheet.create({
   card: {
-    backgroundColor: COLORS.surface,
+    backgroundColor: C.surface,
     borderRadius: theme.radius.lg,
     padding: theme.spacing.md,
     marginBottom: theme.spacing.sm,
@@ -45,9 +44,8 @@ export const globalStyles = StyleSheet.create({
     shadowRadius: 4,
     elevation: 2,
   },
-  // Основная кнопка
   btnPrimary: {
-    backgroundColor: COLORS.primary,
+    backgroundColor: C.primary,
     borderRadius: theme.radius.round,
     paddingVertical: 14,
     paddingHorizontal: theme.spacing.lg,
@@ -59,38 +57,33 @@ export const globalStyles = StyleSheet.create({
     fontSize: theme.font.subtitle,
     fontWeight: '700',
   },
-  // Кнопка-призрак
   btnOutline: {
     borderWidth: 1.5,
-    borderColor: COLORS.primary,
+    borderColor: C.primary,
     borderRadius: theme.radius.round,
     paddingVertical: 12,
     paddingHorizontal: theme.spacing.lg,
     alignItems: 'center',
   },
   btnOutlineText: {
-    color: COLORS.primary,
+    color: C.primary,
     fontSize: theme.font.body,
     fontWeight: '600',
   },
-  // Заголовок экрана
   screenHeader: {
     fontSize: theme.font.header,
     fontWeight: '800',
-    color: COLORS.textPrimary,
+    color: C.textPrimary,
   },
-  // Вспомогательный текст
   textSecondary: {
     fontSize: theme.font.small,
-    color: COLORS.textSecondary,
+    color: C.textSecondary,
   },
-  // Разделитель
   divider: {
     height: 1,
-    backgroundColor: COLORS.divider,
+    backgroundColor: C.divider,
     marginVertical: theme.spacing.sm,
   },
-  // Пустой экран — центр
   emptyContainer: {
     flex: 1,
     alignItems: 'center',
@@ -99,7 +92,7 @@ export const globalStyles = StyleSheet.create({
   },
   emptyText: {
     fontSize: theme.font.subtitle,
-    color: COLORS.textSecondary,
+    color: C.textSecondary,
     textAlign: 'center',
     marginTop: theme.spacing.md,
   },
