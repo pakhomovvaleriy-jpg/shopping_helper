@@ -16,7 +16,7 @@ const SORT_OPTIONS = [
   { id: 'added',    label: 'По добавлению',  emoji: '🕐' },
 ];
 
-const APP_VERSION = '1.0.0';
+const APP_VERSION = '1.1.0';
 
 export default function SettingsScreen({ navigate }) {
   const { colors: C, gs, themeId, setTheme } = useTheme();
@@ -182,6 +182,17 @@ export default function SettingsScreen({ navigate }) {
             <Text style={styles.dangerIcon}>🗑</Text>
           </TouchableOpacity>
         </View>
+
+        {/* ─── Бюджет ─── */}
+        <Text style={styles.groupLabel}>Финансы</Text>
+        <TouchableOpacity style={styles.budgetCard} onPress={() => navigate('budget')} activeOpacity={0.85}>
+          <Text style={styles.budgetIcon}>💰</Text>
+          <View style={{ flex: 1 }}>
+            <Text style={styles.budgetTitle}>Бюджет на месяц</Text>
+            <Text style={styles.budgetDesc}>Планируйте расходы по категориям и отслеживайте факт</Text>
+          </View>
+          <Text style={styles.infoArrow}>›</Text>
+        </TouchableOpacity>
 
         {/* ─── Поддержать разработчика ─── */}
         <Text style={styles.groupLabel}>Поддержать разработчика</Text>
@@ -406,6 +417,33 @@ const createStyles = (C, insets) => StyleSheet.create({
   infoArrow: {
     fontSize: 22,
     color: C.textHint,
+  },
+
+  // Бюджет
+  budgetCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: C.surface,
+    borderRadius: theme.radius.lg,
+    padding: theme.spacing.md,
+    marginBottom: theme.spacing.sm,
+    borderWidth: 1.5,
+    borderColor: C.border,
+    gap: 12,
+  },
+  budgetIcon: {
+    fontSize: 32,
+  },
+  budgetTitle: {
+    fontSize: theme.font.body,
+    fontWeight: '700',
+    color: C.textPrimary,
+    marginBottom: 4,
+  },
+  budgetDesc: {
+    fontSize: theme.font.small,
+    color: C.textSecondary,
+    lineHeight: 18,
   },
 
   // Донат

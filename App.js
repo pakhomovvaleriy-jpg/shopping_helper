@@ -11,6 +11,7 @@ import AddItemScreen from './src/screens/AddItemScreen';
 import HelpScreen from './src/screens/HelpScreen';
 import SettingsScreen from './src/screens/SettingsScreen';
 import DonateScreen from './src/screens/DonateScreen';
+import BudgetScreen from './src/screens/BudgetScreen';
 
 function AppContent() {
   const [screen, setScreen] = useState('lists');
@@ -31,6 +32,7 @@ function AppContent() {
       case 'help':     return <HelpScreen navigate={navigate} />;
       case 'settings': return <SettingsScreen navigate={navigate} />;
       case 'donate':   return <DonateScreen navigate={navigate} />;
+      case 'budget':   return <BudgetScreen navigate={navigate} />;
       default:         return <ListsScreen navigate={navigate} />;
     }
   };

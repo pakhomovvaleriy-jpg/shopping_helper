@@ -273,3 +273,79 @@ export const saveSettings = async (settings) => {
     console.log('saveSettings error:', e);
   }
 };
+
+// ─── БЮДЖЕТ ─────────────────────────────────────────────────────────────────
+
+// Маппинг категорий товаров → категории бюджета
+const CATEGORY_TO_BUDGET = {
+  vegetables: 'food',
+  meat:       'food',
+  dairy:      'food',
+  bread:      'food',
+  cereals:    'food',
+  frozen:     'food',
+  drinks:     'food',
+  sweets:     'food',
+  cleaning:   'household',
+  other:      'other',
+};
+
+// Посчитать факт расходов из завершённых списков за месяц
+// monthKey = '2026-04'
+// Возвращает { totals: { food: 1200, household: 300, ... }, listCount: 3 }
+export const getFactFromLists = async (monthKey) => {
+  try {
+    const lists = await getLists();
+    const [year, month] = monthKey.split('-').map(Number);
+
+    const completed = lists.filter(l => {
+      if (!l.completedAt) return false;
+      const d = new Date(l.completedAt);
+      return d.getFullYear() === year && (d.getMonth() + 1) === month;
+    });
+
+    const totals = {};
+    let listCount = 0;
+
+    for (const list of completed) {
+      let hasPrice = false;
+      for (const item of (list.items || [])) {
+        const price = parseFloat(item.price) || 0;
+        const qty = parseFloat(item.quantity) || 1;
+        if (price <= 0) continue;
+        hasPrice = true;
+        const budgetCat = CATEGORY_TO_BUDGET[item.category] || 'other';
+        totals[budgetCat] = (totals[budgetCat] || 0) + price * qty;
+      }
+      if (hasPrice) listCount++;
+    }
+
+    Object.keys(totals).forEach(k => { totals[k] = Math.round(totals[k]); });
+    return { totals, listCount };
+  } catch {
+    return { totals: {}, listCount: 0 };
+  }
+};
+
+// Получить бюджет за конкретный месяц (ключ вида '2026-04')
+export const getBudget = async (month) => {
+  try {
+    const json = await AsyncStorage.getItem(STORAGE_KEYS.BUDGET);
+    const all = json ? JSON.parse(json) : {};
+    return all[month] || { plan: {}, fact: {} };
+  } catch {
+    return { plan: {}, fact: {} };
+  }
+};
+
+// Сохранить бюджет за конкретный месяц
+export const saveBudget = async (month, data) => {
+  try {
+    const json = await AsyncStorage.getItem(STORAGE_KEYS.BUDGET);
+    const all = json ? JSON.parse(json) : {};
+    all[month] = data;
+    await AsyncStorage.setItem(STORAGE_KEYS.BUDGET, JSON.stringify(all));
+  } catch (e) {
+    console.log('saveBudget error:', e);
+  }
+};

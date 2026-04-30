@@ -6,7 +6,7 @@ import React, { useState, useCallback, useMemo } from 'react';
 import {
   View, Text, TouchableOpacity,
   StyleSheet, Modal, TextInput, ScrollView,
-  Alert, RefreshControl,
+  Alert, RefreshControl, Platform,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import DateTimePicker from '@react-native-community/datetimepicker';

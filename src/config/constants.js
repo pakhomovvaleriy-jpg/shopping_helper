@@ -6,7 +6,17 @@ export const STORAGE_KEYS = {
   LISTS: 'shopping_lists',           // все списки покупок
   SETTINGS: 'app_settings',          // настройки приложения
   PRICES: 'item_prices',             // база цен товаров
+  BUDGET: 'monthly_budget',          // бюджет по месяцам
 };
+
+// Категории бюджета (шире, чем категории товаров)
+export const BUDGET_CATEGORIES = [
+  { id: 'food',       label: 'Продукты',    emoji: '🛒', color: '#4caf50' },
+  { id: 'household',  label: 'Хозтовары',   emoji: '🧴', color: '#2196f3' },
+  { id: 'transport',  label: 'Транспорт',   emoji: '🚌', color: '#ff9800' },
+  { id: 'cafe',       label: 'Кафе/Доставка', emoji: '☕', color: '#9c27b0' },
+  { id: 'other',      label: 'Другое',      emoji: '📦', color: '#607d8b' },
+];
 
 // Категории товаров (порядок = порядок в магазине)
 export const CATEGORIES = [
