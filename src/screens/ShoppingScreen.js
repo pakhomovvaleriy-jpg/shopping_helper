@@ -9,6 +9,7 @@ import {
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useTheme } from '../context/ThemeContext';
+import SwipeableRow from '../components/SwipeableRow';
 import { CATEGORIES, UNITS } from '../config/constants';
 import { theme } from '../styles/theme';
 import {
@@ -213,38 +214,39 @@ export default function ShoppingScreen({ navigate, params }) {
   );
 
   const renderItem = (item) => (
-    <TouchableOpacity
-      key={item.id}
-      style={[styles.itemRow, item.checked && styles.itemRowChecked]}
-      onPress={() => handleToggle(item.id)}
-      onLongPress={() => handleOpenEdit(item)}
-      activeOpacity={0.7}
-    >
-      {/* Чекбокс */}
-      <View style={[styles.checkbox, item.checked && styles.checkboxChecked]}>
-        {item.checked && <Text style={styles.checkmark}>✓</Text>}
-      </View>
+    <SwipeableRow key={item.id} onDelete={() => handleRemoveItem(item.id)} style={styles.swipeableRow}>
+      <TouchableOpacity
+        style={[styles.itemRow, item.checked && styles.itemRowChecked]}
+        onPress={() => handleToggle(item.id)}
+        onLongPress={() => handleOpenEdit(item)}
+        activeOpacity={0.7}
+      >
+        {/* Чекбокс */}
+        <View style={[styles.checkbox, item.checked && styles.checkboxChecked]}>
+          {item.checked && <Text style={styles.checkmark}>✓</Text>}
+        </View>
 
-      {/* Название */}
-      <View style={{ flex: 1 }}>
-        <Text style={[styles.itemName, item.checked && styles.itemNameChecked]}>
-          {item.emoji} {item.name}
-        </Text>
-        <Text style={gs.textSecondary}>
-          {item.quantity} {item.unit}
-          {item.price > 0
-            ? (item.unit === 'г' || item.unit === 'мл')
-              ? `  ·  ${item.price} ₽`
-              : `  ·  ${item.price} ₽/${item.unit}`
-            : ''}
-        </Text>
-      </View>
-      {item.price > 0 && (
-        <Text style={[styles.itemTotal, item.checked && { color: C.textHint }]}>
-          {itemTotal(item).toFixed(0)} ₽
-        </Text>
-      )}
-    </TouchableOpacity>
+        {/* Название */}
+        <View style={{ flex: 1 }}>
+          <Text style={[styles.itemName, item.checked && styles.itemNameChecked]}>
+            {item.emoji} {item.name}
+          </Text>
+          <Text style={gs.textSecondary}>
+            {item.quantity} {item.unit}
+            {item.price > 0
+              ? (item.unit === 'г' || item.unit === 'мл')
+                ? `  ·  ${item.price} ₽`
+                : `  ·  ${item.price} ₽/${item.unit}`
+              : ''}
+          </Text>
+        </View>
+        {item.price > 0 && (
+          <Text style={[styles.itemTotal, item.checked && { color: C.textHint }]}>
+            {itemTotal(item).toFixed(0)} ₽
+          </Text>
+        )}
+      </TouchableOpacity>
+    </SwipeableRow>
   );
 
   const renderCategory = (cat) => (
@@ -608,13 +610,15 @@ const createStyles = (C, insets) => StyleSheet.create({
     textTransform: 'uppercase',
     letterSpacing: 0.5,
   },
+  swipeableRow: {
+    marginBottom: 6,
+  },
   itemRow: {
     flexDirection: 'row',
     alignItems: 'center',
     backgroundColor: C.surface,
     borderRadius: theme.radius.md,
     padding: 12,
-    marginBottom: 6,
     shadowColor: '#000',
     shadowOffset: { width: 0, height: 1 },
     shadowOpacity: 0.05,
